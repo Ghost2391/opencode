@@ -178,10 +178,111 @@ your-app/
 
 ---
 
+## 从源码构建
+
+### 前置要求
+
+- [Bun](https://bun.sh) 1.2+（用于安装依赖和运行构建脚本）
+- Node.js 18.20.8 x64（打包到发布包中的运行时）
+- Windows 7 SP1 x64（目标运行平台）
+
+### 构建步骤
+
+```batch
+REM 1. 克隆仓库
+git clone https://github.com/Ghost2391/opencode.git
+cd opencode
+
+REM 2. 安装依赖（需要在 Linux/macOS 或 Windows 10+ 上安装 Bun）
+bun install
+
+REM 3. 构建 esbuild 单文件 bundle
+cd packages\opencode
+bun run script\build.ts
+
+REM 4. 打包产物在 dist\bundle\ 目录中：
+REM    - index.mjs        — 主程序 bundle（约 42 MB）
+REM    - cli\             — Worker 线程代码
+```
+
+### Win7 兼容性补丁
+
+构建完成后，对 `index.mjs` 应用以下补丁：
+
+#### 补丁脚本（位于 `packages/opencode/dist/win7/`）
+
+| 脚本 | 用途 |
+|------|------|
+| `_patch_bundle.mjs` | 修复 jsonc-parser 的 CJS require 路径 |
+| `_find_async.mjs` | 扫描异步模块加载的依赖顺序 |
+| `_find_selfcalls.mjs` | 扫描模块自身引用的 await 调用 |
+| `_patch_selfcalls.mjs` | 修复循环依赖死锁（将 await 改为 fire-and-forget） |
+| `_verify_patch.mjs` | 验证补丁完整性 |
+
+#### 手动补丁清单
+
+1. **better-sqlite3 boolean 参数**  
+   将 `readonly: config6.readonly` 改为 `readonly: !!config6.readonly`  
+   将 `fileMustExist: config6.readonly && !config6.create` 改为 `!!config6.readonly && !config6.create`
+
+2. **SQL 执行回退**  
+   在 `run15()` 函数中，对 `.all()` 调用添加 try/catch，如果抛出 `does not return data` 则用 `.run()` 重试
+
+3. **PRAGMA 原生路径**  
+   SQL 语句以 `"PRAGMA"` 开头时，使用 `native.pragma()` 代替 `.all()`
+
+4. **Worker Thread 全局对象**  
+   在 `cli/tui/worker.mjs` 顶部添加：
+   ```js
+   import { parentPort } from "worker_threads";
+   const postMessage = parentPort.postMessage.bind(parentPort);
+   let onmessage = null;
+   parentPort.on("message", (msg) => onmessage && onmessage({ data: msg }));
+   ```
+   在 `index.mjs` 顶部添加空实现（主线程用不到 Worker 通信）
+
+5. **循环依赖死锁**  
+   找到所有 `await init_xxx()` 调用，如果目标函数已经 await 了当前模块，则移除 `await` 改为直接调用。  
+   关键链：`init_plugin5` ↔ `init_host` — 将 `init_host()` 调用改为 fire-and-forget
+
+6. **Layer 树 null 安全**  
+   在 `walk()`、`flatten9()`、`compileDependencies()` 等函数中添加 `if (node == null) return` 守卫
+
+7. **tree-sitter-powershell WASM**  
+   从项目根目录复制 `node_modules/tree-sitter-powershell/tree-sitter-powershell.wasm`  
+   到 bundle 的 `node_modules/tree-sitter-powershell/` 目录
+
+8. **Shell 工具 null 检查**  
+   在 `pathArgs`、`home2`、`dynamic`、`prefix4`、`resolveWasm` 函数中添加 `if (x == null) return x` 守卫
+
+9. **.ts 工具导入**  
+   在工具加载循环中，对 `import(toolPath)` 添加 `.catch(() => void 0)` 跳过 TypeScript 文件
+
+### 打包发布
+
+将 `release/` 目录打包：
+
+```batch
+REM 复制必要的运行时文件
+copy bin\node.exe release\bin\
+copy index.mjs release\
+copy cli\tui\worker.mjs release\cli\tui\
+xcopy /E node_modules\tree-sitter-powershell release\node_modules\tree-sitter-powershell\
+
+REM 用 7-Zip 打包
+7z a -mx=9 opencode-win7.7z release\
+```
+
+### 补丁脚本 vs 手动修改
+
+本仓库中的 `_patch_bundle.mjs` 等脚本记录了自动化补丁过程，但考虑到 esbuild 生成的 bundle 每次构建的函数名（如 `run15`、`init_plugin5`）可能变化，建议根据生成的 bundle 内容按上述清单手动定位修改。
+
+---
+
 ## 技术栈
 
 - **运行时**：Node.js 18.20.8（x64）
-- **打包**：esbuild 单文件 ESM
+- **打包**：esbuild 单文件 ESM（`bun run script/build.ts`）
 - **数据库**：SQLite（better-sqlite3 v9.6.0 native 模块）
 - **Shell 解析**：tree-sitter（bash + PowerShell grammar）
 - **AI 协议**：AISDK / OpenAI 兼容
