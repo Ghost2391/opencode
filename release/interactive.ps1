@@ -1,4 +1,4 @@
-$env:NODE_SKIP_PLATFORM_CHECK = "1"
+$env:NODE_SKIP_PLATFORM_CHECK="1"
 $SessionId = $null
 while ($true) {
     $msg = Read-Host "> "
